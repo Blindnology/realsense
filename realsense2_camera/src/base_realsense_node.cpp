@@ -1890,8 +1890,8 @@ void BaseRealSenseNode::setupStreams()
 {
 	ROS_INFO("setupStreams...");
     try{
-        std::shared_ptr<rs2::video_stream_profile> left_profile;
-        std::shared_ptr<rs2::video_stream_profile> right_profile;
+        //std::shared_ptr<rs2::video_stream_profile> left_profile;
+        //std::shared_ptr<rs2::video_stream_profile> right_profile;
 
 		// Publish image stream info
         for (auto& profiles : _enabled_profiles)
@@ -1904,15 +1904,15 @@ void BaseRealSenseNode::setupStreams()
                     updateStreamCalibData(video_profile);
 
                     // stream index: 1=left, 2=right
-                    if (video_profile.stream_index() == 1) { left_profile = std::make_shared<rs2::video_stream_profile>(video_profile); }
-                    if (video_profile.stream_index() == 2) { right_profile = std::make_shared<rs2::video_stream_profile>(video_profile);  }
+                    //if (video_profile.stream_index() == 1) { left_profile = std::make_shared<rs2::video_stream_profile>(video_profile); }
+                    //if (video_profile.stream_index() == 2) { right_profile = std::make_shared<rs2::video_stream_profile>(video_profile);  }
                 }
             }
         }
 
-        if (left_profile && right_profile) {
-            updateExtrinsicsCalibData(*left_profile, *right_profile);
-        }
+        //if (left_profile && right_profile) {
+        //    updateExtrinsicsCalibData(*left_profile, *right_profile);
+        //}
 
         // Streaming IMAGES
         std::map<std::string, std::vector<rs2::stream_profile> > profiles;
@@ -1979,6 +1979,14 @@ void BaseRealSenseNode::updateStreamCalibData(const rs2::video_stream_profile& v
     _camera_info[stream_index].P.at(9) = 0;
     _camera_info[stream_index].P.at(10) = 1;
     _camera_info[stream_index].P.at(11) = 0;
+
+    // Set Tx, Ty for right camera
+    if (stream_index == INFRA2 && _enable[INFRA1])
+    {
+        const auto& ex = getAProfile(INFRA2).get_extrinsics_to(getAProfile(INFRA1));
+        _camera_info[stream_index].P.at(3) = -intrinsic.fx * ex.translation[0]; // Tx
+        _camera_info[stream_index].P.at(7) = -intrinsic.fy * ex.translation[1]; // Ty
+    }
 
     if (intrinsic.model == RS2_DISTORTION_KANNALA_BRANDT4)
     {

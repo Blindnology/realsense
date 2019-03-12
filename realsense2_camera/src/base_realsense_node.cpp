@@ -560,6 +560,8 @@ void BaseRealSenseNode::getParameters()
         _pnh.param(param_name, _enable[stream], true);
     }
 
+    _pnh.param("infra2_cam_info_only", _infra2_cam_info_only, INFRA2_CAM_INFO_ONLY);
+
     for (auto& stream : HID_STREAMS)
     {
         std::string param_name(_stream_name[stream.first] + "_fps");
@@ -785,7 +787,9 @@ void BaseRealSenseNode::setupPublishers()
             camera_info << stream_name << "/camera_info";
 
             std::shared_ptr<FrequencyDiagnostics> frequency_diagnostics(new FrequencyDiagnostics(_fps[stream], stream_name, _serial_no));
-            _image_publishers[stream] = {image_transport.advertise(image_raw.str(), 1), frequency_diagnostics};
+            // Don't advertise INFRA2 image in _infra2_cam_info_only mode
+            if (!(stream == INFRA2 && _infra2_cam_info_only))
+                _image_publishers[stream] = {image_transport.advertise(image_raw.str(), 1), frequency_diagnostics};
             _info_publisher[stream] = _node_handle.advertise<sensor_msgs::CameraInfo>(camera_info.str(), 1);
 
             if (_align_depth && (stream != DEPTH) && stream.second < 2)
@@ -1698,6 +1702,12 @@ void BaseRealSenseNode::setupStreams()
         for (const std::pair<stream_index_pair, std::vector<rs2::stream_profile>>& profile : _enabled_profiles)
         {
             std::string module_name = _sensors[profile.first].get_info(RS2_CAMERA_INFO_NAME);
+            // Don't add infra2 stream in _infra2_cam_info_only mode
+            if (profile.first == INFRA2 && _infra2_cam_info_only) {
+                ROS_INFO_STREAM("skip inserting " << profile.second.begin()->stream_name()
+                  << " to " << module_name << " due to infra2_cam_info_only mode");
+                continue;
+            }
             ROS_INFO_STREAM("insert " << rs2_stream_to_string(profile.second.begin()->stream_type())
               << " to " << module_name);
             profiles[module_name].insert(profiles[module_name].begin(),
@@ -2255,6 +2265,25 @@ void BaseRealSenseNode::publishFrame(rs2::frame f, const ros::Time& t,
         cam_info.header.stamp = t;
         cam_info.header.seq = seq[stream];
         info_publisher.publish(cam_info);
+
+        // Publish INFRA2 CameraInfo together with INFRA1 CameraInfo in _infra2_cam_info_only mode.
+        // Do this for original (not aligned) stream only.
+        if (stream == INFRA1 && _enable[INFRA2] && _infra2_cam_info_only &&
+            info_publishers.find(INFRA2) != info_publishers.end()) {
+            auto& info_publisher_infra2 = info_publishers.at(INFRA2);
+            if (0 != info_publisher_infra2.getNumSubscribers()) {
+                auto& cam_info_infra2 = camera_info.at(INFRA2);
+                if (cam_info_infra2.width != width) {
+                    rs2::stream_profile profile_infra2;
+                    if (getEnabledProfile(INFRA2, profile_infra2))
+                        updateStreamCalibData(profile_infra2.as<rs2::video_stream_profile>());
+                }
+                cam_info_infra2.header.stamp = t;
+                cam_info_infra2.header.seq = seq[stream];
+                info_publisher_infra2.publish(cam_info_infra2);
+                ROS_DEBUG("INFRA2 CameraInfo published");
+            }
+        }
 
         image_publisher.first.publish(img);
         image_publisher.second->update();

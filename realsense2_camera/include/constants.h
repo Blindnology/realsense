@@ -64,6 +64,7 @@ namespace realsense2_camera
     const bool ENABLE_IMU     = true;
     const bool HOLD_BACK_IMU_FOR_FRAMES = false;
     const bool PUBLISH_ODOM_TF = true;
+    const bool INFRA2_CAM_INFO_ONLY = false;
 
 
     const std::string DEFAULT_BASE_FRAME_ID            = "camera_link";

@@ -198,7 +198,8 @@ namespace realsense2_camera
         void enable_devices();
         void setupFilters();
         void setupStreams();
-        void setBaseTime(double frame_time, bool warn_no_metadata);
+        void setBaseTime(double frame_time, const rs2::frame &frame);
+        ros::Time getFrameTimestampROS(double frame_time, const rs2::frame &frame);
         cv::Mat& fix_depth_scale(const cv::Mat& from_image, cv::Mat& to_image);
         void clip_depth(rs2::depth_frame depth_frame, float clipping_dist);
         void updateStreamCalibData(const rs2::video_stream_profile& video_profile);
@@ -287,6 +288,7 @@ namespace realsense2_camera
         std::map<stream_index_pair, sensor_msgs::CameraInfo> _camera_info;
         bool _infra2_cam_info_only;
         std::atomic_bool _is_initialized_time_base;
+        bool _time_metadata, _global_time;
         double _camera_time_base;
         std::map<stream_index_pair, std::vector<rs2::stream_profile>> _enabled_profiles;
 

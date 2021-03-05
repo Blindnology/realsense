@@ -1508,7 +1508,7 @@ void BaseRealSenseNode::imu_callback_sync(rs2::frame frame, imu_sync_method sync
     bool placeholder_false(false);
     if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
     {
-        _is_initialized_time_base = setBaseTime(frame_time, frame.get_frame_timestamp_domain());
+        _is_initialized_time_base = setBaseTime(frame_time, frame);
     }
 
     seq += 1;
@@ -1517,7 +1517,7 @@ void BaseRealSenseNode::imu_callback_sync(rs2::frame frame, imu_sync_method sync
     {
         auto crnt_reading = *(reinterpret_cast<const float3*>(frame.get_data()));
         Eigen::Vector3d v(crnt_reading.x, crnt_reading.y, crnt_reading.z);
-        CimuData imu_data(stream_index, v, frameSystemTimeSec(frame));
+        CimuData imu_data(stream_index, v, frameSystemTimeSec(frame_time, frame));
         std::deque<sensor_msgs::Imu> imu_msgs;
         switch (sync_method)
         {
@@ -1549,7 +1549,7 @@ void BaseRealSenseNode::imu_callback(rs2::frame frame)
     bool placeholder_false(false);
     if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
     {
-        _is_initialized_time_base = setBaseTime(frame_time, frame.get_frame_timestamp_domain());
+        _is_initialized_time_base = setBaseTime(frame_time, frame);
     }
 
     ROS_DEBUG("Frame arrived: stream: %s ; index: %d ; Timestamp Domain: %s",
@@ -1560,7 +1560,7 @@ void BaseRealSenseNode::imu_callback(rs2::frame frame)
     auto stream_index = (stream == GYRO.first)?GYRO:ACCEL;
     if (0 != _imu_publishers[stream_index].getNumSubscribers())
     {
-        ros::Time t(frameSystemTimeSec(frame));
+        ros::Time t(frameSystemTimeSec(frame_time, frame));
 
         auto imu_msg = sensor_msgs::Imu();
         ImuMessage_AddDefaultValues(imu_msg);
@@ -1593,7 +1593,7 @@ void BaseRealSenseNode::pose_callback(rs2::frame frame)
     bool placeholder_false(false);
     if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
     {
-        _is_initialized_time_base = setBaseTime(frame_time, frame.get_frame_timestamp_domain());
+        _is_initialized_time_base = setBaseTime(frame_time, frame);
     }
 
     ROS_DEBUG("Frame arrived: stream: %s ; index: %d ; Timestamp Domain: %s",
@@ -1602,7 +1602,7 @@ void BaseRealSenseNode::pose_callback(rs2::frame frame)
                 rs2_timestamp_domain_to_string(frame.get_frame_timestamp_domain()));
     const auto& stream_index(POSE);
     rs2_pose pose = frame.as<rs2::pose_frame>().get_pose_data();
-    ros::Time t(frameSystemTimeSec(frame));
+    ros::Time t(frameSystemTimeSec(frame_time, frame));
 
     geometry_msgs::PoseStamped pose_msg;
     pose_msg.pose.position.x = -pose.translation.z;
@@ -1692,10 +1692,10 @@ void BaseRealSenseNode::frame_callback(rs2::frame frame)
         bool placeholder_false(false);
         if (_is_initialized_time_base.compare_exchange_strong(placeholder_false, true) )
         {
-            _is_initialized_time_base = setBaseTime(frame_time, frame.get_frame_timestamp_domain());
+            _is_initialized_time_base = setBaseTime(frame_time, frame);
         }
 
-        ros::Time t(frameSystemTimeSec(frame));
+        ros::Time t(frameSystemTimeSec(frame_time, frame));
         if (frame.is<rs2::frameset>())
         {
             ROS_DEBUG("Frameset arrived.");
@@ -1864,29 +1864,59 @@ void BaseRealSenseNode::multiple_message_callback(rs2::frame frame, imu_sync_met
     }
 }
 
-bool BaseRealSenseNode::setBaseTime(double frame_time, rs2_timestamp_domain time_domain)
+bool BaseRealSenseNode::setBaseTime(double frame_time, const rs2::frame &frame)
 {
-    ROS_WARN_ONCE(time_domain == RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME ? "Frame metadata isn't available! (frame_timestamp_domain = RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME)" : "");
-    if (time_domain == RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK)
-    {
-        ROS_WARN("frame's time domain is HARDWARE_CLOCK. Timestamps may reset periodically.");
-        _ros_time_base = ros::Time::now();
-        _camera_time_base = frame_time;
-        return true;
+    // Use global time if available
+    if (frame.get_frame_timestamp_domain() == RS2_TIMESTAMP_DOMAIN_GLOBAL_TIME)
+        _global_time = true;
+    else {
+        ROS_WARN_ONCE("Global time stamping isn't available! Timestamps may reset periodically.");
+        _global_time = false;
+
+        // Use extended timestamp metadata if available
+        if (frame.supports_frame_metadata(RS2_FRAME_METADATA_SENSOR_TIMESTAMP) &&
+            frame.supports_frame_metadata(RS2_FRAME_METADATA_FRAME_TIMESTAMP) &&
+            frame.supports_frame_metadata(RS2_FRAME_METADATA_BACKEND_TIMESTAMP)) {
+            ROS_WARN_ONCE("Frame extended timestamp metadata is used!");
+            _time_metadata = true;
+        }
+        // Otherwise, use default approach
+        else {
+            ROS_WARN("Frame extended timestamp metadata isn't available, using default approach!");
+            _time_metadata = false;
+            _ros_time_base = ros::Time::now();
+            _camera_time_base = frame_time;
+            return true;
+        }
     }
     return false;
 }
 
-double BaseRealSenseNode::frameSystemTimeSec(rs2::frame frame)
+double BaseRealSenseNode::frameSystemTimeSec(double frame_time, const rs2::frame &frame)
 {
-    if (frame.get_frame_timestamp_domain() == RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK)
-    {
-        double elapsed_camera_ms = (/*ms*/ frame.get_timestamp() - /*ms*/ _camera_time_base) / 1000.0;
-        return (_ros_time_base.toSec() + elapsed_camera_ms);
-    }
-    else
-    {
-        return (frame.get_timestamp() / 1000.0);
+    // Use global time if available
+    if (_global_time)
+        return frame_time * 1e-3;
+    else {
+        // If extended timestamp metadata is available:
+        // We compute a ROS timestamp as a middle of a frame's exposure calculated by device,
+        // with device and host times approximately synchronized by
+        // RS2_FRAME_METADATA_FRAME_TIMESTAMP and RS2_FRAME_METADATA_BACKEND_TIMESTAMP,
+        // which are assumed to happen at the same physical time.
+        if (_time_metadata) {
+            rs2_metadata_type t_sensor = 0, t_frame = 0, t_backend = 0;
+
+            t_sensor = frame.get_frame_metadata(RS2_FRAME_METADATA_SENSOR_TIMESTAMP); // usec
+            t_frame = frame.get_frame_metadata(RS2_FRAME_METADATA_FRAME_TIMESTAMP); // usec
+            t_backend = frame.get_frame_metadata(RS2_FRAME_METADATA_BACKEND_TIMESTAMP); // msec
+
+            return t_backend * 1e-3 - (t_frame - t_sensor) * 1e-6;
+        }
+        // Otherwise:
+        // We compute a ROS timestamp which is based on an initial ROS time at point of first frame,
+        // and the incremental timestamp from the camera.
+        else
+            return _ros_time_base.toSec() + (/*ms*/ frame_time - /*ms*/ _camera_time_base) * /*ms to seconds*/ 1e-3;
     }
 }
 
